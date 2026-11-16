@@ -1,0 +1,704 @@
+//! Minimal protobuf codec for TikTok LIVE transport and public-area events.
+//!
+//! This module decodes the transport fields needed to open and maintain the WebSocket, plus
+//! a stable listener-facing subset of common events, without `prost` or generated code.
+//!
+//! Decoding operates directly on the wire format, so unknown fields are ignored instead of
+//! breaking parsing when TikTok adds fields without notice.
+//!
+//! Field numbers from the schema used by reference clients:
+//!
+//! ```text
+//! ProtoMessageFetchResult          WebcastPushFrame
+//!   1  messages (repeated)           1  seq_id
+//!   2  cursor                        2  log_id
+//!   5  internal_ext                  3  service
+//!   7  route_params (map)            4  method
+//!   8  heartbeat_duration            5  headers (map)
+//!   9  need_ack                      6  payload_encoding
+//!  10  push_server                   7  payload_type
+//!                                    8  payload
+//! ```
+//!
+//! > **F1 pending:** confirm these numbers against `fixtures/f0/im_fetch.pb`.
+//! > `FetchResult::decode` does not fail when they differ: it returns empty fields, and
+//! > validation in `docs/05` turns this into a typed error.
+
+use std::fmt;
+
+use crate::params::Identity;
+
+// --- Field numbers ----------------------------------------------------------------
+
+mod fetch_field {
+    pub const CURSOR: u32 = 2;
+    pub const INTERNAL_EXT: u32 = 5;
+    pub const ROUTE_PARAMS: u32 = 7;
+    pub const HEARTBEAT_DURATION: u32 = 8;
+    pub const NEED_ACK: u32 = 9;
+    pub const PUSH_SERVER: u32 = 10;
+}
+
+mod frame_field {
+    pub const SEQ_ID: u32 = 1;
+    pub const LOG_ID: u32 = 2;
+    pub const SERVICE: u32 = 3;
+    pub const METHOD: u32 = 4;
+    pub const HEADERS: u32 = 5;
+    pub const PAYLOAD_ENCODING: u32 = 6;
+    pub const PAYLOAD_TYPE: u32 = 7;
+    pub const PAYLOAD: u32 = 8;
+}
+
+/// Fields of a `map<string, string>` entry.
+mod map_entry_field {
+    pub const KEY: u32 = 1;
+    pub const VALUE: u32 = 2;
+}
+
+/// Fields of `webcast.im.EnterRoom`, from the IM SDK's own descriptor.
+///
+/// The names come from that descriptor rather than from guesswork: field 4 is `live_id` — whose
+/// value happens to be 12 — and field 5 is `identity`. They were called `room_type` and `user_type`
+/// here until the descriptor was read on 2026-08-18. The bytes were always right; the names were
+/// not, and a wrong name is what makes the next change to this function dangerous.
+mod enter_room_field {
+    // The whole message is written down, not just the four fields sent today: this is the reference
+    // for anyone adding one, and `scripts/headless/player-audit.mjs` checks these numbers against
+    // the descriptor the player ships. A field guessed here is a frame the server discards without
+    // complaint.
+    #![allow(dead_code)]
+
+    pub const ROOM_ID: u32 = 1;
+    pub const ROOM_TAG: u32 = 2;
+    pub const LIVE_REGION: u32 = 3;
+    pub const LIVE_ID: u32 = 4;
+    pub const IDENTITY: u32 = 5;
+    pub const CURSOR: u32 = 6;
+    pub const ACCOUNT_TYPE: u32 = 7;
+    pub const ENTER_UNIQ_ID: u32 = 8;
+    pub const FILTER_WELCOME_MSG: u32 = 9;
+    pub const IS_ANCHOR_CONTINUE_KEEP_MSG: u32 = 10;
+}
+
+/// Fields of `webcast.im.HeartBeat`.
+mod heartbeat_field {
+    #![allow(dead_code)]
+
+    pub const ROOM_ID: u32 = 1;
+    pub const SEND_PACKET_SEQ_ID: u32 = 2;
+}
+
+/// The web player's `live_id`. Constant across every room.
+const LIVE_ID: u64 = 12;
+/// `filter_welcome_msg`: keep the welcome messages, since they are events like any other.
+const FILTER_WELCOME_DISABLED: &str = "0";
+
+// --- Errors -----------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProtoError {
+    /// The buffer ended halfway through a field.
+    Truncated,
+    /// Varint longer than 10 bytes.
+    VarintOverflow,
+    /// Wire type unknown to this decoder (3 and 4 are obsolete groups).
+    UnsupportedWireType(u8),
+}
+
+impl fmt::Display for ProtoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Truncated => write!(f, "truncated buffer"),
+            Self::VarintOverflow => write!(f, "varint is too long"),
+            Self::UnsupportedWireType(w) => write!(f, "unsupported wire type: {w}"),
+        }
+    }
+}
+
+impl std::error::Error for ProtoError {}
+
+// --- Low-level decoder ------------------------------------------------------------
+
+/// Field value as represented on the wire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireValue<'a> {
+    Varint(u64),
+    Fixed64(u64),
+    Fixed32(u32),
+    Bytes(&'a [u8]),
+}
+
+impl<'a> WireValue<'a> {
+    pub fn as_bytes(&self) -> Option<&'a [u8]> {
+        match self {
+            Self::Bytes(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&'a str> {
+        self.as_bytes().and_then(|b| std::str::from_utf8(b).ok())
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Varint(v) => Some(*v),
+            Self::Fixed64(v) => Some(*v),
+            Self::Fixed32(v) => Some(u64::from(*v)),
+            Self::Bytes(_) => None,
+        }
+    }
+}
+
+/// Owned protobuf value for methods that are newer than the bundled schema snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawProtoValue {
+    Varint(u64),
+    Fixed64(u64),
+    Fixed32(u32),
+    Bytes(Vec<u8>),
+}
+
+impl<'a> From<WireValue<'a>> for RawProtoValue {
+    fn from(value: WireValue<'a>) -> Self {
+        match value {
+            WireValue::Varint(value) => Self::Varint(value),
+            WireValue::Fixed64(value) => Self::Fixed64(value),
+            WireValue::Fixed32(value) => Self::Fixed32(value),
+            WireValue::Bytes(value) => Self::Bytes(value.to_vec()),
+        }
+    }
+}
+
+/// One field of a protobuf message decoded without a schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawProtoField {
+    pub number: u32,
+    pub value: RawProtoValue,
+}
+
+/// Iterate over protobuf message fields without knowing the schema.
+pub struct Reader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    /// Whether unread bytes remain in the protobuf message.
+    pub fn has_remaining(&self) -> bool {
+        self.pos < self.buf.len()
+    }
+
+    fn varint(&mut self) -> Result<u64, ProtoError> {
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let byte = *self.buf.get(self.pos).ok_or(ProtoError::Truncated)?;
+            self.pos += 1;
+            if shift >= 64 {
+                return Err(ProtoError::VarintOverflow);
+            }
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(value);
+            }
+            shift += 7;
+        }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], ProtoError> {
+        let end = self.pos.checked_add(n).ok_or(ProtoError::Truncated)?;
+        let slice = self.buf.get(self.pos..end).ok_or(ProtoError::Truncated)?;
+        self.pos = end;
+        Ok(slice)
+    }
+
+    /// Next field, or `None` at the end of the message.
+    pub fn next_field(&mut self) -> Option<Result<(u32, WireValue<'a>), ProtoError>> {
+        if !self.has_remaining() {
+            return None;
+        }
+        Some(self.read_field())
+    }
+
+    fn read_field(&mut self) -> Result<(u32, WireValue<'a>), ProtoError> {
+        let tag = self.varint()?;
+        let field = (tag >> 3) as u32;
+        let wire_type = (tag & 0x7) as u8;
+        let value = match wire_type {
+            0 => WireValue::Varint(self.varint()?),
+            1 => {
+                let b = self.take(8)?;
+                WireValue::Fixed64(u64::from_le_bytes(b.try_into().expect("8 bytes")))
+            }
+            2 => {
+                let len = self.varint()? as usize;
+                WireValue::Bytes(self.take(len)?)
+            }
+            5 => {
+                let b = self.take(4)?;
+                WireValue::Fixed32(u32::from_le_bytes(b.try_into().expect("4 bytes")))
+            }
+            other => return Err(ProtoError::UnsupportedWireType(other)),
+        };
+        Ok((field, value))
+    }
+}
+
+// --- Low-level encoder ------------------------------------------------------------
+
+/// Write protobuf messages. Only the parts needed for `ack`, heartbeats, and the
+/// initial room entry are implemented.
+#[derive(Debug, Default, Clone)]
+pub struct Writer {
+    buf: Vec<u8>,
+}
+
+impl Writer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn varint(&mut self, mut value: u64) {
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value == 0 {
+                self.buf.push(byte);
+                return;
+            }
+            self.buf.push(byte | 0x80);
+        }
+    }
+
+    fn tag(&mut self, field: u32, wire_type: u8) {
+        self.varint((u64::from(field) << 3) | u64::from(wire_type));
+    }
+
+    /// Varint field. Omitted when zero, as proto3 does.
+    pub fn u64_field(&mut self, field: u32, value: u64) -> &mut Self {
+        if value != 0 {
+            self.tag(field, 0);
+            self.varint(value);
+        }
+        self
+    }
+
+    pub fn bool_field(&mut self, field: u32, value: bool) -> &mut Self {
+        self.u64_field(field, u64::from(value))
+    }
+
+    /// `bytes`/`string`/submessage field. Omitted when empty.
+    pub fn bytes_field(&mut self, field: u32, value: &[u8]) -> &mut Self {
+        if !value.is_empty() {
+            self.tag(field, 2);
+            self.varint(value.len() as u64);
+            self.buf.extend_from_slice(value);
+        }
+        self
+    }
+
+    pub fn str_field(&mut self, field: u32, value: &str) -> &mut Self {
+        self.bytes_field(field, value.as_bytes())
+    }
+
+    /// `map<string, string>` entry.
+    pub fn map_entry(&mut self, field: u32, key: &str, value: &str) -> &mut Self {
+        let mut entry = Writer::new();
+        entry.str_field(map_entry_field::KEY, key);
+        entry.str_field(map_entry_field::VALUE, value);
+        self.bytes_field(field, &entry.finish())
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+/// Decode a `map<string, string>` entry.
+///
+/// Fields that are not readable as strings are skipped rather than discarding the entry:
+/// this decoder exists to survive TikTok adding fields, and dropping a whole `route_params`
+/// or header pair because of one unexpected neighbour would silently break the transport.
+fn decode_map_entry(buf: &[u8]) -> Option<(String, String)> {
+    let mut key = None;
+    let mut value = String::new();
+    let mut reader = Reader::new(buf);
+    while let Some(field) = reader.next_field() {
+        // A truncated entry still yields whatever was decoded before the damage.
+        let Ok((number, wire)) = field else { break };
+        match number {
+            map_entry_field::KEY => {
+                if let Some(decoded) = wire.as_str() {
+                    key = Some(decoded.to_owned());
+                }
+            }
+            map_entry_field::VALUE => {
+                if let Some(decoded) = wire.as_str() {
+                    value = decoded.to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    key.map(|k| (k, value))
+}
+
+/// Structure of an uninterpreted message: `(field, type, size)`.
+///
+/// Use this to confirm field numbers against a real response before relying on this module.
+pub fn describe(buf: &[u8]) -> Result<Vec<(u32, &'static str, usize)>, ProtoError> {
+    let mut out = Vec::new();
+    let mut reader = Reader::new(buf);
+    while let Some(field) = reader.next_field() {
+        let (number, wire) = field?;
+        let (kind, size) = match wire {
+            WireValue::Varint(v) => ("varint", v.to_string().len()),
+            WireValue::Fixed64(_) => ("fixed64", 8),
+            WireValue::Fixed32(_) => ("fixed32", 4),
+            WireValue::Bytes(b) => ("bytes", b.len()),
+        };
+        out.push((number, kind, size));
+    }
+    Ok(out)
+}
+
+/// Decode every protobuf field without assigning semantic names.
+///
+/// This preserves new TikTok methods for callers until a future schema snapshot maps them to
+/// generated types.
+pub fn decode_raw_fields(buf: &[u8]) -> Result<Vec<RawProtoField>, ProtoError> {
+    let mut fields = Vec::new();
+    let mut reader = Reader::new(buf);
+    while let Some(field) = reader.next_field() {
+        let (number, value) = field?;
+        fields.push(RawProtoField {
+            number,
+            value: value.into(),
+        });
+    }
+    Ok(fields)
+}
+
+// --- ProtoMessageFetchResult ------------------------------------------------------
+
+/// The subset of `ProtoMessageFetchResult` required to open the WebSocket.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FetchResult {
+    /// WebSocket URI base. Empty in a 200 response means silent rejection.
+    pub push_server: String,
+    /// Parameters **already signed by TikTok**. Used as-is.
+    pub route_params: Vec<(String, String)>,
+    /// Required; without it the response is invalid.
+    pub cursor: String,
+    /// Payload for `ack` frames.
+    pub internal_ext: String,
+    pub heartbeat_duration: u64,
+    pub need_ack: bool,
+}
+
+impl FetchResult {
+    /// Decode known fields and ignore the rest.
+    ///
+    /// No validation: an empty `push_server` is returned as-is and interpreted by
+    /// [`FetchResult::rejection_reason`].
+    pub fn decode(buf: &[u8]) -> Result<Self, ProtoError> {
+        let mut out = Self::default();
+        let mut reader = Reader::new(buf);
+        while let Some(field) = reader.next_field() {
+            let (number, wire) = field?;
+            match number {
+                fetch_field::CURSOR => out.cursor = wire.as_str().unwrap_or_default().to_owned(),
+                fetch_field::INTERNAL_EXT => {
+                    out.internal_ext = wire.as_str().unwrap_or_default().to_owned()
+                }
+                fetch_field::PUSH_SERVER => {
+                    out.push_server = wire.as_str().unwrap_or_default().to_owned()
+                }
+                fetch_field::HEARTBEAT_DURATION => {
+                    out.heartbeat_duration = wire.as_u64().unwrap_or_default()
+                }
+                fetch_field::NEED_ACK => out.need_ack = wire.as_u64().unwrap_or_default() != 0,
+                fetch_field::ROUTE_PARAMS => {
+                    if let Some(entry) = wire.as_bytes().and_then(decode_map_entry) {
+                        out.route_params.push(entry);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// Serialize back to the wire format.
+    ///
+    /// Needed to hand a `ProtoMessageFetchResult` to clients that expect TikTok's own bytes,
+    /// such as `tiktok-live-connector`, when the result was assembled locally rather than
+    /// returned by `/webcast/im/fetch/`.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::new();
+        writer
+            .str_field(fetch_field::CURSOR, &self.cursor)
+            .str_field(fetch_field::INTERNAL_EXT, &self.internal_ext);
+        for (key, value) in &self.route_params {
+            writer.map_entry(fetch_field::ROUTE_PARAMS, key, value);
+        }
+        writer
+            .u64_field(fetch_field::HEARTBEAT_DURATION, self.heartbeat_duration)
+            .bool_field(fetch_field::NEED_ACK, self.need_ack)
+            .str_field(fetch_field::PUSH_SERVER, &self.push_server);
+        writer.finish()
+    }
+
+    /// Reason this response is a rejection, if applicable.
+    ///
+    /// A 200 with empty `push_server` means TikTok rejected silently
+    /// (`docs/00-research.md` §1).
+    pub fn rejection_reason(&self) -> Option<crate::RejectReason> {
+        if self.push_server.is_empty() || self.route_params.is_empty() {
+            Some(crate::RejectReason::EmptyPushServer)
+        } else {
+            None
+        }
+    }
+}
+
+// --- WebcastPushFrame -------------------------------------------------------------
+
+/// WebSocket transport envelope.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PushFrame {
+    pub seq_id: u64,
+    pub log_id: u64,
+    pub service: u64,
+    pub method: u64,
+    pub headers: Vec<(String, String)>,
+    pub payload_encoding: String,
+    /// `msg` carries events; `hb`, `ack`, and `im_enter_room_resp` are transport frames.
+    pub payload_type: String,
+    pub payload: Vec<u8>,
+}
+
+impl PushFrame {
+    pub fn decode(buf: &[u8]) -> Result<Self, ProtoError> {
+        let mut out = Self::default();
+        let mut reader = Reader::new(buf);
+        while let Some(field) = reader.next_field() {
+            let (number, wire) = field?;
+            match number {
+                frame_field::SEQ_ID => out.seq_id = wire.as_u64().unwrap_or_default(),
+                frame_field::LOG_ID => out.log_id = wire.as_u64().unwrap_or_default(),
+                frame_field::SERVICE => out.service = wire.as_u64().unwrap_or_default(),
+                frame_field::METHOD => out.method = wire.as_u64().unwrap_or_default(),
+                frame_field::HEADERS => {
+                    if let Some(entry) = wire.as_bytes().and_then(decode_map_entry) {
+                        out.headers.push(entry);
+                    }
+                }
+                frame_field::PAYLOAD_ENCODING => {
+                    out.payload_encoding = wire.as_str().unwrap_or_default().to_owned()
+                }
+                frame_field::PAYLOAD_TYPE => {
+                    out.payload_type = wire.as_str().unwrap_or_default().to_owned()
+                }
+                frame_field::PAYLOAD => out.payload = wire.as_bytes().unwrap_or_default().to_vec(),
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u64_field(frame_field::SEQ_ID, self.seq_id)
+            .u64_field(frame_field::LOG_ID, self.log_id)
+            .u64_field(frame_field::SERVICE, self.service)
+            .u64_field(frame_field::METHOD, self.method);
+        for (k, v) in &self.headers {
+            w.map_entry(frame_field::HEADERS, k, v);
+        }
+        w.str_field(frame_field::PAYLOAD_ENCODING, &self.payload_encoding)
+            .str_field(frame_field::PAYLOAD_TYPE, &self.payload_type)
+            .bytes_field(frame_field::PAYLOAD, &self.payload);
+        w.finish()
+    }
+
+    /// Does it contain events? Only `msg`; all others are transport and discarded.
+    pub fn is_message(&self) -> bool {
+        self.payload_type == "msg"
+    }
+
+    /// Value of `compress_type` in frame headers.
+    pub fn compress_type(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == "compress_type")
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The `ack` corresponding to this frame (`docs/05` §Ack).
+    ///
+    /// Payload is `internal_ext`, or `-` when empty.
+    pub fn ack(&self, internal_ext: &str) -> Self {
+        let payload = if internal_ext.is_empty() {
+            "-"
+        } else {
+            internal_ext
+        };
+        self.ack_for_batch(payload)
+    }
+
+    /// Player-compatible per-batch ACK. Empty extension leaves payload empty.
+    /// The legacy `ack` helper retains its historical `-` fallback contract.
+    pub fn ack_for_batch(&self, internal_ext: &str) -> Self {
+        Self {
+            log_id: self.log_id,
+            payload_type: "ack".into(),
+            payload_encoding: "pb".into(),
+            payload: internal_ext.as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// Frame sent immediately after the handshake to enter the room.
+    ///
+    /// `room_id` is not in the envelope: it is inside `WebcastImEnterRoomMessage`, the
+    /// the payload of `im_enter_room`. Without this frame TikTok may accept 101 and leave
+    /// the socket completely silent.
+    pub fn enter_room(room_id: u64) -> Self {
+        let mut writer = Writer::new();
+        writer
+            .u64_field(enter_room_field::ROOM_ID, room_id)
+            .u64_field(enter_room_field::LIVE_ID, LIVE_ID)
+            .str_field(enter_room_field::IDENTITY, Identity::Audience.as_str())
+            .str_field(
+                enter_room_field::FILTER_WELCOME_MSG,
+                FILTER_WELCOME_DISABLED,
+            );
+
+        Self {
+            payload_encoding: "pb".into(),
+            payload_type: "im_enter_room".into(),
+            payload: writer.finish(),
+            ..Self::default()
+        }
+    }
+
+    /// Application heartbeat. The payload is `HeartbeatMessage`:
+    /// `room_id=1` and `send_packet_seq_id=2`.
+    pub fn heartbeat(room_id: u64, sequence_id: u64) -> Self {
+        let mut writer = Writer::new();
+        writer
+            .u64_field(heartbeat_field::ROOM_ID, room_id)
+            .u64_field(heartbeat_field::SEND_PACKET_SEQ_ID, sequence_id);
+
+        Self {
+            payload_encoding: "pb".into(),
+            payload_type: "hb".into(),
+            payload: writer.finish(),
+            ..Self::default()
+        }
+    }
+}
+
+// --- Webcast event batch -----------------------------------------------------------
+
+mod base_message_field {
+    pub const METHOD: u32 = 1;
+    pub const PAYLOAD: u32 = 2;
+    pub const MESSAGE_ID: u32 = 3;
+    pub const MESSAGE_TYPE: u32 = 4;
+    pub const OFFSET: u32 = 5;
+    pub const IS_HISTORY: u32 = 6;
+}
+
+mod event_batch_field {
+    pub const MESSAGES: u32 = 1;
+    pub const CURSOR: u32 = 2;
+    pub const INTERNAL_EXT: u32 = 5;
+    pub const NEED_ACK: u32 = 9;
+}
+
+/// One embedded event from a `msg` WebSocket frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WebcastMessage {
+    pub method: String,
+    pub payload: Vec<u8>,
+    pub message_id: u64,
+    pub message_type: u64,
+    pub offset: u64,
+    pub is_history: bool,
+}
+
+impl WebcastMessage {
+    pub fn decode(buf: &[u8]) -> Result<Self, ProtoError> {
+        let mut message = Self::default();
+        let mut reader = Reader::new(buf);
+        while let Some(field) = reader.next_field() {
+            let (number, wire) = field?;
+            match number {
+                base_message_field::METHOD => {
+                    message.method = wire.as_str().unwrap_or_default().to_owned()
+                }
+                base_message_field::PAYLOAD => {
+                    message.payload = wire.as_bytes().unwrap_or_default().to_vec()
+                }
+                base_message_field::MESSAGE_ID => {
+                    message.message_id = wire.as_u64().unwrap_or_default()
+                }
+                base_message_field::MESSAGE_TYPE => {
+                    message.message_type = wire.as_u64().unwrap_or_default()
+                }
+                base_message_field::OFFSET => message.offset = wire.as_u64().unwrap_or_default(),
+                base_message_field::IS_HISTORY => {
+                    message.is_history = wire.as_u64().unwrap_or_default() != 0
+                }
+                _ => {}
+            }
+        }
+        Ok(message)
+    }
+}
+
+/// Event batch carried by a `PushFrame` whose `payload_type` is `msg`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WebcastEventBatch {
+    pub messages: Vec<WebcastMessage>,
+    pub cursor: String,
+    pub internal_ext: String,
+    pub need_ack: bool,
+}
+
+impl WebcastEventBatch {
+    pub fn decode(buf: &[u8]) -> Result<Self, ProtoError> {
+        let mut batch = Self::default();
+        let mut reader = Reader::new(buf);
+        while let Some(field) = reader.next_field() {
+            let (number, wire) = field?;
+            match number {
+                event_batch_field::MESSAGES => {
+                    if let Some(bytes) = wire.as_bytes() {
+                        batch.messages.push(WebcastMessage::decode(bytes)?);
+                    }
+                }
+                event_batch_field::CURSOR => {
+                    batch.cursor = wire.as_str().unwrap_or_default().to_owned()
+                }
+                event_batch_field::INTERNAL_EXT => {
+                    batch.internal_ext = wire.as_str().unwrap_or_default().to_owned()
+                }
+                event_batch_field::NEED_ACK => {
+                    batch.need_ack = wire.as_u64().unwrap_or_default() != 0
+                }
+                _ => {}
+            }
+        }
+        Ok(batch)
+    }
+}
+

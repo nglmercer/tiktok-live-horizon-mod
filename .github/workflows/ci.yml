@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  # The SDK and the engine the mod builds against are pinned to this commit of the fork (see mod/horizon-mod.toml).
+  HORIZON_REV: db7638b30c531c7f8004fdc5b6946de468db7aac
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: cargo-horizon-mod (built from the fork at the pinned commit)
+        run: cargo install --locked --git https://github.com/arismoko/horizon --rev "$HORIZON_REV" cargo-horizon-mod
+
+      - name: Package (generates mod/.horizon/sdk and tiktok_live.hmod)
+        working-directory: mod
+        run: cargo horizon-mod build
+
+      - name: Tests (parsers, rules, functions, DSL, deterministic fuzzing)
+        working-directory: mod
+        run: cargo test --lib
+
+      - name: Tests of the development tools
+        run: cargo test --manifest-path tools/Cargo.toml
+
+      - name: The lock does not change
+        run: git diff --exit-code -- mod/Cargo.lock
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tiktok_live.hmod
+          path: mod/target/horizon-mod/tiktok_live.hmod

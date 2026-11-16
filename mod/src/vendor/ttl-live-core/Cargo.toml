@@ -1,0 +1,13 @@
+[package]
+name = "ttl-live-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+ttl-sign-core = { path = "../ttl-sign-core" }
+ttl-live-ws = { path = "../ttl-live-ws" }
+ttl-live-events = { path = "../ttl-live-events" }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

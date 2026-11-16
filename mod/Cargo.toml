@@ -1,0 +1,62 @@
+[package]
+name = "tiktok_live_mod"
+version = "0.1.0"
+# 2024, not 2021: the cargo-horizon-mod template and the examples' let-chains require it.
+edition = "2024"
+publish = false
+
+# No [features], no build.rs, no build-dependencies: the launcher rejects them.
+# Registry dependencies with an exact version; the lock is produced by `cargo xtask lock`.
+#
+# Launcher rule: a package with the SAME version as the game's must have EXACTLY its dependency
+# graph. A different version coexists without trouble, so where the mod needs other features than
+# the game (tokio with io-util, futures-util with macros, ...) its own version is pinned.
+# Check with: cargo xtask lockdiff <engine/Cargo.lock> mod/Cargo.lock
+[dependencies]
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
+
+# The vendored signer (`cargo xtask vendor-signer`): paths inside the mod.
+ttl-sign-core      = { path = "src/vendor/ttl-sign-core" }
+ttl-live-ws        = { path = "src/vendor/ttl-live-ws" }
+ttl-live-events    = { path = "src/vendor/ttl-live-events" }
+ttl-live-proto     = { path = "src/vendor/ttl-live-proto" }
+ttl-live-core      = { path = "src/vendor/ttl-live-core" }
+ttl-sign-embedded  = { path = "src/vendor/ttl-sign-embedded" }
+ttl-live-discovery = { path = "src/vendor/ttl-live-discovery" }
+
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "1"
+serde_norway = "=0.9.42"
+log = "0.4"
+
+# --- alignment with the game's graph (see `cargo xtask lockdiff`) --------------------------------
+# The same features as the game (they do not change the mod's behavior):
+cc = { version = "=1.6.0", features = ["parallel"] }
+crypto-common = { version = "=0.1.7", features = ["rand_core"] }
+digest = { version = "=0.10.7", features = ["subtle"] }
+getrandom02 = { package = "getrandom", version = "=0.2.17", features = ["js"] }
+getrandom04 = { package = "getrandom", version = "=0.4.3", features = ["wasm_js"] }
+mio = { version = "=1.2.4", features = ["log"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "=1.15.1", features = ["web"] }
+smallvec = { version = "=1.16.2", features = ["serde"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["std", "io", "channel", "sink"] }
+futures-channel = { version = "=0.3.34", features = ["sink"] }
+rand_core06 = { package = "rand_core", version = "=0.6.4", features = ["getrandom"] }
+bumpalo = { version = "=3.20.3", features = ["allocator-api2"] }
+# Own version (rquickjs-core asks for hashbrown with default features and tokio needs
+# io-util/macros; the game has others):
+hashbrown = "=0.17.0"
+indexmap = "=2.14.1"
+tokio = { version = "=1.52.3", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = "=0.1.43"
+# ring carries native code with versioned symbols: the game already builds 0.17.14 and does not
+# admit a second copy of the same version. 0.17.13 coexists; rustls and rustls-webpki depend on it.
+ring = "=0.17.13"
+rustls-webpki = { version = "=0.103.15", default-features = false, features = ["ring", "std"] }
+
+# The mod's own HTTP client (src/http.rs): TLS with rustls+ring, webpki roots, gzip.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+flate2 = "1"
+url = "2.5"

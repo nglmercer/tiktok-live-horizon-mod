@@ -1,0 +1,3 @@
+# `cargo xtask <command>` runs the project's development tools (see tools/src/main.rs).
+[alias]
+xtask = "run --quiet --manifest-path tools/Cargo.toml --"

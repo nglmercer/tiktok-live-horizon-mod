@@ -1,0 +1,17 @@
+id = "tiktok_live"
+name = "TikTok LIVE"
+version = "0.1.0"
+description = "Connects TikTok LIVE creators and turns their events into in-game actions."
+authors = ["nglmercer"]
+license = "MIT"
+# A native mod: Rust in src/, compiled by the launcher against the game build [native] pins.
+api = "0.2"
+# The fork rejects side = "server" (manifest.rs:415); only "both" or "client". The mod's hooks are
+# server-side; on a client they do nothing.
+side = "both"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "db7638b30c531c7f8004fdc5b6946de468db7aac"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

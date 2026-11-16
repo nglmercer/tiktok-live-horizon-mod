@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tiktok_live/schemas/event-rule.schema.json",
+  "title": "TikTok LIVE event rule file",
+  "description": "The rules section of a file in config/tiktok_live/events/.",
+  "type": "object",
+  "required": [
+    "rules"
+  ],
+  "properties": {
+    "rules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "required": [
+        "id",
+        "trigger",
+        "actions"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "trigger": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "chat.emote",
+            "gift",
+            "gift.final",
+            "like",
+            "member",
+            "social.follow",
+            "social.share",
+            "social.other",
+            "social.unknown",
+            "room.user",
+            "unknown"
+          ]
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": -1000,
+          "maximum": 1000
+        },
+        "stop-processing": {
+          "type": "boolean",
+          "default": false
+        },
+        "match": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ]
+              },
+              {
+                "type": "array"
+              },
+              {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                  "type": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "array"
+                  ]
+                },
+                "propertyNames": {
+                  "enum": [
+                    "equals",
+                    "equals-ignore-case",
+                    "not-equal",
+                    "contains",
+                    "starts-with",
+                    "ends-with",
+                    "greater-than",
+                    "greater-or-equal",
+                    "less-than",
+                    "less-or-equal",
+                    "in"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "aggregate": {
+          "type": "object",
+          "required": [
+            "metric",
+            "scope",
+            "threshold"
+          ],
+          "properties": {
+            "metric": {
+              "type": "string",
+              "enum": [
+                "count",
+                "total"
+              ]
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "event",
+                "user",
+                "global"
+              ]
+            },
+            "threshold": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            },
+            "carry-remainder": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "cooldown": {
+          "type": "object",
+          "required": [
+            "duration"
+          ],
+          "properties": {
+            "duration": {
+              "type": "string"
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "rule",
+                "user",
+                "user-and-rule",
+                "global"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "condition": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "all": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "any": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/condition"
+          }
+        },
+        "not": {
+          "$ref": "#/$defs/condition"
+        },
+        "field": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "broadcast",
+            "title",
+            "sound",
+            "particle",
+            "spawn-entity",
+            "give-item",
+            "effect",
+            "heal",
+            "teleport",
+            "function",
+            "command",
+            "prime-tnt",
+            "tnt-cage",
+            "block-cage",
+            "void-shaft",
+            "chunk-replace",
+            "lightning-effect",
+            "place-cobweb",
+            "remove-item",
+            "temporary-clear-inventory",
+            "lightning"
+          ]
+        },
+        "material": {
+          "type": "string",
+          "description": "Placeable Minecraft block ID for block-cage, e.g. minecraft:obsidian"
+        },
+        "radius": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 6
+        },
+        "restore-seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 120
+        },
+        "ignite": {
+          "type": "boolean",
+          "description": "TNT only; delay ignition of one cage block"
+        },
+        "ignite-delay-ticks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "fuse-ticks": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 240
+        },
+        "occupant": {
+          "type": "string",
+          "description": "Optional Minecraft entity to spawn inside the cage"
+        },
+        "occupant-charged": {
+          "type": "boolean",
+          "description": "Set true when occupant is minecraft:creeper"
+        },
+        "from": {
+          "type": "string",
+          "description": "Only replace blocks of this material for chunk-replace; omit to replace every block"
+        },
+        "radius-chunks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "chunk-replace area: 0 is the player's chunk only, 1 is 3x3 chunks"
+        },
+        "min-y": {
+          "type": "integer",
+          "description": "Lowest Y modified by chunk-replace; defaults to the world minimum"
+        },
+        "max-y": {
+          "type": "integer",
+          "description": "Highest Y modified by chunk-replace; defaults to the world maximum"
+        },
+        "max-blocks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "chunk-replace budget; 0 (default) is unlimited, otherwise the action is skipped when more blocks would change"
+        },
+        "blocks-per-tick": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "description": "chunk-replace work spread per tick; defaults to 512"
+        },
+        "damage": {
+          "type": "boolean",
+          "description": "Use real lightning (damage, fire and vanilla mob transformations). lightning defaults true; lightning-effect defaults false."
+        },
+        "duration-seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "description": "0 means one burst; lightning defaults 60, lightning-effect defaults 0."
+        },
+        "interval-ticks": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 1200,
+          "default": 20
+        }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "block-cage"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "material"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "chunk-replace"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "material"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

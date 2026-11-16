@@ -1,0 +1,43 @@
+//! Signer core: types and request construction.
+//!
+//! No network or GUI, so it can be tested in CI without a display.
+//!
+//! Modules:
+//!
+//! - [`preset`] — `DevicePreset` / `LocationPreset` / `ScreenPreset`: one source of truth
+//!   for User-Agent **and** browser parameters.
+//! - [`params`] — query construction for `/webcast/im/fetch/` and the WebSocket.
+//! - [`cookie`] — minimal `CookieJar` in `X-Set-TT-Cookie` format.
+//! - [`outcome`] — `SignOutcome`: rejection and transport errors never share a variant.
+//! - [`room`] — unsigned `unique_id` → `room_id` lookup and live-channel discovery.
+//! - [`proto`] — transport envelope decoding: `PushFrame`, `FetchResult`, and the batch
+//!   splitter. Event semantics live in `ttl-live-events`.
+//! - [`gift_streak`] — collapses a burst of gift messages into one gift with its true total.
+//! - [`uri`] — escapes a signed socket URI so a Rust HTTP client can parse it.
+
+pub mod backend;
+pub mod cookie;
+pub mod gift_streak;
+pub mod outcome;
+pub mod params;
+pub mod preset;
+pub mod proto;
+pub mod room;
+pub mod uri;
+
+pub use backend::{BackendFuture, ClientIdentity, MockBackend, SignerBackend, TransportRequest};
+pub use cookie::CookieJar;
+pub use gift_streak::{CompletedGift, GiftStreaks};
+pub use outcome::{RejectReason, SignError, SignOutcome, SignedFetch};
+pub use params::{
+    Compression, DirectSocketParams, FetchParams, Identity, Query, SocketCluster, WsParams,
+    DIRECT_SOCKET_HOST, WS_REUSE_PATH,
+};
+pub use preset::{DevicePreset, LocationPreset, Preset, ScreenPreset};
+pub use proto::FetchResult;
+pub use room::{
+    extract_live_channels, gift_list_url, is_live_status, parse_gift_list, room_info_url,
+    room_lookup_url, webcast_refusal, Gift, LiveChannel, RoomInfo, RoomLookup, RoomOwner,
+    WebcastRefusal,
+};
+pub use uri::sanitize_uri;

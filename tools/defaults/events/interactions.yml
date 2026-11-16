@@ -1,0 +1,194 @@
+# Gift IDs verified against the user-provided 719-gift TikTok catalog.
+# xN is Minecraft EFFECT count per gift, NOT N gifts required.
+# Non-streak gifts and completed streak gifts arrive as gift.final through the SDK.
+# Big presets are intentionally capped by per-event/per-minute budgets.
+rules:
+  - id: meme-likes-zombie
+    enabled: true
+    trigger: like
+    aggregate:
+      metric: count
+      scope: global
+      threshold: 150
+      carry-remainder: true
+    actions:
+      - type: spawn-entity
+        entity: minecraft:zombie
+        count: 1
+        target: nearest-online
+
+  # One Rose creates a compact 3x3 TNT cage with a charged creeper
+  # trapped inside alongside the player. No need to use console /fill.
+  - id: meme-rose-charged-creeper-cage
+    enabled: true
+    trigger: gift.final
+    match:
+      gift-id: '5655'
+    actions:
+      - type: block-cage
+        material: minecraft:tnt
+        radius: 1
+        height: 3
+        occupant: minecraft:creeper
+        occupant-charged: true
+        ignite: false
+        restore-seconds: 20
+        target: nearest-online
+
+  - id: meme-confetti-tnt
+    enabled: true # Limited to bounded TNT bursts at runtime
+    trigger: gift.final
+    match:
+      gift-id: '5585'
+    actions:
+      - type: prime-tnt
+        count: 30000 # Request 30k; runtime caps to max-entities-per-event (maximum 128)
+        fuse-ticks: 90
+        burst-size: 8
+        target: nearest-online
+
+  - id: meme-rosa-charged-creeper
+    enabled: true
+    trigger: gift.final
+    match:
+      gift-id: '8913'
+    actions:
+      - type: spawn-entity
+        entity: minecraft:creeper
+        charged: true
+        count: 1
+        multiply-by-repeat: true
+        target: nearest-online
+
+  # Separate prank: any donation worth at least 100 diamonds creates
+  # a TNT cage. The priming step is optional and acts like an ignited /fill.
+  - id: meme-high-value-tnt-cage
+    enabled: true
+    trigger: gift.final
+    match:
+      diamonds:
+        greater-or-equal: 100
+    cooldown:
+      duration: 15s
+      scope: rule
+    actions:
+      - type: block-cage
+        material: minecraft:tnt
+        radius: 2
+        height: 3
+        ignite: true
+        ignite-delay-ticks: 40
+        fuse-ticks: 80
+        restore-seconds: 25
+        target: nearest-online
+
+  - id: meme-finger-heart-webs
+    enabled: true
+    trigger: gift.final
+    match:
+      gift-id: '5487'
+    actions:
+      - type: place-cobweb
+        multiply-by-repeat: true
+        count: 6
+        restore-seconds: 12
+        target: nearest-online
+
+  - id: meme-share-apples
+    enabled: true
+    trigger: social.share
+    actions:
+      - type: give-item
+        material: minecraft:enchanted_golden_apple
+        count: 3
+        target: nearest-online
+
+  - id: meme-cap-wardens
+    enabled: true # Ten wardens are intentionally part of the meme
+    trigger: gift.final
+    match:
+      gift-id: '6104'
+    actions:
+      - type: spawn-entity
+        entity: minecraft:warden
+        count: 10
+        multiply-by-repeat: true
+        max-effective-count: 10
+        target: nearest-online
+
+  - id: meme-corgi-inventory
+    enabled: true # Inventory is restored automatically
+    trigger: gift.final
+    match:
+      gift-id: '6267'
+    actions:
+      - type: temporary-clear-inventory
+        restore-seconds: 8
+        target: nearest-online
+
+  - id: meme-capybara-evokers
+    enabled: true
+    trigger: gift.final
+    match:
+      gift-id: '14488'
+    actions:
+      - type: spawn-entity
+        entity: minecraft:evoker
+        multiply-by-repeat: true
+        count: 15
+        max-effective-count: 15
+        target: nearest-online
+
+  - id: meme-doughnut-void
+    enabled: true # Digs the blocks below the player to the world's minimum height
+    trigger: gift.final
+    match:
+      gift-id: '5879'
+    cooldown:
+      duration: 30s
+      scope: rule
+    actions:
+      - type: void-shaft
+        radius: 1
+        max-blocks: 4096
+        blocks-per-tick: 96
+        restore-seconds: 30
+        target: nearest-online
+
+  - id: meme-fireworks-skeletons
+    enabled: true
+    trigger: gift.final
+    match:
+      gift-id: '6090'
+    actions:
+      - type: spawn-entity
+        entity: minecraft:wither_skeleton
+        count: 10
+        multiply-by-repeat: true
+        max-effective-count: 10
+        target: nearest-online
+
+  - id: meme-money-gun-withers
+    enabled: true # Request 500, cap actual spawned to 3 per activation
+    trigger: gift.final
+    match:
+      gift-id: '7168' # Money Gun, not Gem Gun
+    actions:
+      - type: spawn-entity
+        entity: minecraft:wither
+        count: 500
+        multiply-by-repeat: true
+        max-effective-count: 3
+        target: nearest-online
+
+  # Every completed gift streak shows who sent what. A rule without a
+  # match section fires for every gift.final event: {gift.name} is the
+  # gift and {viewer} the nickname (or @username when it is missing).
+  - id: meme-gift-thanks-title
+    enabled: true
+    trigger: gift.final
+    actions:
+      - type: title
+        target: all-online
+        title: "{gift.name}!"
+        subtitle: "Thanks {viewer}!"

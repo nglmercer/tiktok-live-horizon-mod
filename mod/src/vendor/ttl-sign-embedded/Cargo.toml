@@ -1,0 +1,13 @@
+[package]
+name = "ttl-sign-embedded"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+ttl-live-discovery = { path = "../ttl-live-discovery" }
+rand = "0.10"
+rquickjs = "0.14"
+thiserror = "2"
+tokio = { version = "1", features = ["sync"] }

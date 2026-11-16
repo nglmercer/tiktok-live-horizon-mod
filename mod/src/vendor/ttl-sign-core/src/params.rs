@@ -1,0 +1,623 @@
+//! Query-string construction.
+//!
+//! Two consumers:
+//!
+//! - [`FetchParams`] → query for `https://webcast.tiktok.com/webcast/im/fetch/`; it is the
+//!   only signed part.
+//! - [`WsParams`] → WebSocket query; it is **not** signed because `route_params` are already
+//!   signed inside the protobuf.
+//!
+//! A `Vec<(String, String)>` is intentional instead of a `HashMap`: ordering is stable and
+//! the WebSocket query must repeat `version_code` with two different values.
+
+use rand::RngExt;
+
+use crate::preset::Preset;
+
+const DEVICE_ID_DIGITS: usize = 19;
+const DEVICE_ID_FIRST_DIGIT_MIN: u32 = 1;
+const DEVICE_ID_FIRST_DIGIT_MAX: u32 = 9;
+const DEVICE_ID_DIGIT_MIN: u32 = 0;
+const DEVICE_ID_DIGIT_MAX: u32 = 9;
+const LAST_RTT_MIN: u32 = 100;
+const LAST_RTT_MAX: u32 = 200;
+const APP_ID: &str = "1988";
+const LIVE_ID: &str = "12";
+const FETCH_RULE: &str = "1";
+/// `version_code` for the transport request.
+///
+/// `180800`, which is a constant in the player's own transport chunk
+/// (`static/js/async/9894.*.js`), not the `270000` the rest of the web app sends. Read directly out
+/// of that chunk on 2026-08-18.
+const FETCH_VERSION_CODE: &str = "180800";
+const WS_VERSION_CODE: &str = "180800";
+/// The `version_code` a client appends after the signed query, which is not the one in it.
+///
+/// Distinct from [`FETCH_VERSION_CODE`]: this duplicate is the connector's own value and stays
+/// `270000` regardless of what the transport request carries.
+const TRAILING_VERSION_CODE: &str = "270000";
+const HEARTBEAT_DURATION_MS: &str = "10000";
+/// `device_platform`: the player is a web client and says so on every request.
+const DEVICE_PLATFORM_WEB: &str = "web";
+/// The player sends booleans as these strings, not as `1`/`0`.
+const YES: &str = "true";
+/// Flags the player sends as `1`, which is not the same spelling as its booleans.
+const ENABLED: &str = "1";
+/// `did_rule`: 3 when there is no device id to rule on, 0 when there is one.
+const DID_RULE_WITHOUT_DEVICE_ID: &str = "3";
+const DID_RULE_WITH_DEVICE_ID: &str = "0";
+/// `last_rtt` before any round trip has been measured.
+const LAST_RTT_UNMEASURED: &str = "-1";
+/// `resp_content_type`: the transport speaks protobuf.
+const RESPONSE_PROTOBUF: &str = "protobuf";
+/// The IM SDK's own version, sent alongside the two `version_code` values.
+const UPDATE_VERSION_CODE: &str = "2.0.0";
+
+/// Query string under construction: ordered pairs with duplicates allowed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Query(Vec<(String, String)>);
+
+impl Query {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Add a pair. If the key exists, **overwrite** its value in place so client parameters
+    /// override route parameters without reordering.
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        let key = key.into();
+        let value = value.into();
+        match self.0.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = value,
+            None => self.0.push((key, value)),
+        }
+        self
+    }
+
+    /// Add a pair **without** deduplication. Required for the duplicated `version_code`.
+    pub fn push_raw(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.0.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Serialize as `k=v&k=v`, percent-encoding values.
+    pub fn encode(&self) -> String {
+        let mut out = String::new();
+        for (k, v) in &self.0 {
+            if !out.is_empty() {
+                out.push('&');
+            }
+            out.push_str(&percent_encode(k));
+            out.push('=');
+            out.push_str(&percent_encode(v));
+        }
+        out
+    }
+
+    /// Serialize as `k=v&k=v` with **no** encoding at all.
+    ///
+    /// The direct-socket query is signed over its own bytes, and the player's serializer does not
+    /// percent-encode: `browser_version` keeps its spaces and `tz_name` its slash. Encoding here
+    /// would sign different bytes than the ones sent.
+    pub fn encode_raw(&self) -> String {
+        let mut out = String::new();
+        for (k, v) in &self.0 {
+            if !out.is_empty() {
+                out.push('&');
+            }
+            out.push_str(k);
+            out.push('=');
+            out.push_str(v);
+        }
+        out
+    }
+
+    /// Parse `k=v&k=v`. No decoding is performed: this is used on normalized test queries.
+    pub fn parse(raw: &str) -> Self {
+        let mut q = Query::new();
+        for pair in raw.trim_start_matches('?').split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            q.push_raw(k, v);
+        }
+        q
+    }
+
+    /// Parse an encoded query into semantic key/value pairs.
+    ///
+    /// Unlike [`Query::parse`], this decodes each component. Use it when a subsequent
+    /// [`Query::encode`] must reproduce `%2F` rather than double-encoding it as `%252F`.
+    pub fn parse_encoded(raw: &str) -> Self {
+        let mut query = Query::new();
+        for pair in raw.trim_start_matches('?').split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            query.push_raw(percent_decode(key), percent_decode(value));
+        }
+        query
+    }
+}
+
+/// Percent-encoding for query strings: preserve unreserved characters plus `.`, `-`, `_`,
+/// and `~`, and encode everything else. This matches `encodeURIComponent`.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Decode `%XX` escapes.
+///
+/// `+` is deliberately left alone: these queries carry signatures whose bytes must survive
+/// verbatim, and TikTok percent-encodes a real space rather than using `+`.
+pub fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                match u8::from_str_radix(&value[index + 1..index + 3], 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    // Not a valid escape: keep the `%` as an ordinary character.
+                    Err(_) => {
+                        out.push(b'%');
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| value.to_string())
+}
+
+/// Generate a 19-digit `device_id`, matching the real browser.
+pub fn random_device_id() -> String {
+    let mut rng = rand::rng();
+    let mut s = String::with_capacity(DEVICE_ID_DIGITS);
+    s.push(
+        char::from_digit(
+            rng.random_range(DEVICE_ID_FIRST_DIGIT_MIN..=DEVICE_ID_FIRST_DIGIT_MAX),
+            10,
+        )
+        .expect("valid digit"),
+    );
+    for _ in 1..DEVICE_ID_DIGITS {
+        s.push(
+            char::from_digit(
+                rng.random_range(DEVICE_ID_DIGIT_MIN..=DEVICE_ID_DIGIT_MAX),
+                10,
+            )
+            .expect("valid digit"),
+        );
+    }
+    s
+}
+
+/// Keep `last_rtt` plausible, within the range used by the reference client.
+pub fn random_last_rtt() -> u32 {
+    rand::rng().random_range(LAST_RTT_MIN..=LAST_RTT_MAX)
+}
+
+/// Query for `/webcast/im/fetch/`.
+///
+/// `X-Bogus` / `X-Gnarly` / `msToken` are **not** added here; `webmssdk.js` adds them.
+/// when intercepting `fetch` (`docs/01-architecture.md` §D2).
+#[derive(Debug, Clone)]
+pub struct FetchParams {
+    pub room_id: String,
+    pub device_id: String,
+    pub cursor: String,
+    pub internal_ext: String,
+    /// Contact email required by the Euler spec. Empty means it is omitted.
+    pub contact_us: String,
+    /// `sup_ws_ds_opt`: tells TikTok which WebSocket type we want.
+    ///
+    /// With `1`, the response includes a `push_server` of the type
+    /// `ws_proxy/ws_reuse_supplement/`; the pattern documented by
+    /// `docs/00-research.md` §1 describes `webcast<N>-ws-web-<idc>`. Configurable so both
+    /// so both variants can be compared against a real room.
+    pub sup_ws_ds_opt: u8,
+}
+
+impl FetchParams {
+    pub fn new(room_id: impl Into<String>) -> Self {
+        Self {
+            room_id: room_id.into(),
+            device_id: random_device_id(),
+            // The player's *initial* fetch sends `cursor=0` and `internal_ext=0`, not empty ones —
+            // and its query builder deletes empty values outright, so an empty `cursor` is a request
+            // it can never produce. Read from the transport chunk on 2026-08-18.
+            cursor: "0".into(),
+            internal_ext: "0".into(),
+            contact_us: String::new(),
+            sup_ws_ds_opt: 1,
+        }
+    }
+
+    /// Build the complete query from the preset.
+    pub fn build(&self, preset: &Preset) -> Query {
+        let d = &preset.device;
+        let l = &preset.location;
+        let s = &preset.screen;
+
+        let mut q = Query::new();
+        q.set("aid", APP_ID)
+            .set("app_language", &l.language)
+            .set("app_name", "tiktok_web")
+            .set("browser_language", &l.browser_language)
+            .set("browser_name", &d.browser_name)
+            .set("browser_online", "true")
+            .set("browser_platform", &d.browser_platform)
+            .set("browser_version", &d.browser_version)
+            .set("cookie_enabled", "true")
+            .set("cursor", &self.cursor)
+            .set("debug", "false")
+            .set("device_id", &self.device_id)
+            .set("device_platform", "web")
+            .set("did_rule", "3")
+            .set("fetch_rule", FETCH_RULE)
+            .set("history_comment_count", "6")
+            .set("identity", "audience")
+            .set("internal_ext", &self.internal_ext)
+            // `-1` on the first fetch, the value the chunk passes when it has no round trip to
+            // report yet.
+            .set("last_rtt", "-1")
+            .set("live_id", LIVE_ID)
+            .set("os", &d.os)
+            .set("priority_region", &l.region)
+            .set("region", &l.region)
+            .set("resp_content_type", "protobuf")
+            .set("room_id", &self.room_id)
+            .set("screen_height", s.height.to_string())
+            .set("screen_width", s.width.to_string())
+            .set("sup_ws_ds_opt", self.sup_ws_ds_opt.to_string())
+            .set("tz_name", &l.tz_name)
+            .set("version_code", FETCH_VERSION_CODE)
+            .set("webcast_language", &l.language);
+
+        if !self.contact_us.is_empty() {
+            q.set("contact_us", &self.contact_us);
+        }
+        q
+    }
+
+    /// Absolute URL ready to be signed.
+    pub fn url(&self, preset: &Preset) -> String {
+        format!("{}?{}", FETCH_ENDPOINT, self.build(preset).encode())
+    }
+}
+
+/// Endpoint to sign. The only endpoint on the critical path.
+pub const FETCH_ENDPOINT: &str = "https://webcast.tiktok.com/webcast/im/fetch/";
+
+/// WebSocket query: signed `route_params` + our parameters + the trailing `version_code`
+/// duplicated at the end (`docs/05-spec-websocket-client.md`).
+#[derive(Debug, Clone)]
+pub struct WsParams {
+    pub room_id: String,
+    pub compress: Compression,
+    pub last_rtt: u32,
+    /// Cursor from the `/webcast/im/fetch/` response.
+    ///
+    /// It belongs in the WebSocket query, not in `route_params`: verified against a
+    /// real response, where `route_params` only contains `wrss` and `imprp`. Without the cursor,
+    /// handshake is accepted but **no frames arrive**, the hardest failure in the flow to
+    /// diagnose.
+    pub cursor: String,
+    /// `internal_ext` from the same response follows the same reasoning.
+    pub internal_ext: String,
+}
+
+impl WsParams {
+    pub fn new(room_id: impl Into<String>) -> Self {
+        Self {
+            room_id: room_id.into(),
+            compress: Compression::default(),
+            // The current web player sends 0 on its first WebSocket request. A random
+            // RTT is accepted by some older clients but makes the synthetic URI diverge
+            // from the page URL we otherwise reproduce exactly.
+            last_rtt: 0,
+            cursor: String::new(),
+            internal_ext: String::new(),
+        }
+    }
+
+    /// Client-owned parameters, without `route_params`.
+    pub fn client_params(&self, preset: &Preset) -> Query {
+        let d = &preset.device;
+        let l = &preset.location;
+        let s = &preset.screen;
+
+        let mut q = Query::new();
+        q.set("aid", APP_ID)
+            .set("app_language", &l.language)
+            .set("app_name", "tiktok_web")
+            .set("browser_language", &l.browser_language)
+            .set("browser_name", &d.browser_name)
+            .set("browser_online", "true")
+            .set("browser_platform", &d.browser_platform)
+            .set("browser_version", &d.browser_version)
+            .set("client_enter", "1")
+            .set(
+                "compress",
+                self.compress.as_query_value().unwrap_or_default(),
+            )
+            .set("cookie_enabled", "true")
+            .set("cursor", &self.cursor)
+            .set("device_platform", "web")
+            .set("did_rule", "3")
+            .set("heartbeat_duration", HEARTBEAT_DURATION_MS)
+            .set("internal_ext", &self.internal_ext)
+            .set("history_comment_count", "6")
+            .set("identity", "audience")
+            .set("last_rtt", self.last_rtt.to_string())
+            .set("live_id", LIVE_ID)
+            .set("resp_content_type", "protobuf")
+            .set("room_id", &self.room_id)
+            .set("screen_height", s.height.to_string())
+            .set("screen_width", s.width.to_string())
+            .set("sup_ws_ds_opt", "1")
+            .set("tz_name", &l.tz_name)
+            .set("update_version_code", "2.0.0")
+            .set("version_code", WS_VERSION_CODE)
+            .set("webcast_language", &l.language)
+            .set("ws_direct", "1");
+        q
+    }
+
+    /// Complete WebSocket URI.
+    ///
+    /// Three rules must be preserved exactly (`docs/05` URI construction):
+    ///
+    /// 1. Empty `route_params` values are discarded.
+    /// 2. Client parameters are applied afterward and win collisions.
+    /// 3. `&version_code=270000` is appended at the end **even when**
+    ///    `version_code=180800` is already present. The duplicate is intentional.
+    pub fn build_uri(
+        &self,
+        push_server: &str,
+        route_params: &[(String, String)],
+        preset: &Preset,
+    ) -> String {
+        let mut q = Query::new();
+        for (k, v) in route_params {
+            if v.is_empty() {
+                continue;
+            }
+            q.set(k, v);
+        }
+        for (k, v) in self.client_params(preset).iter() {
+            q.set(k, v);
+        }
+        q.push_raw("version_code", TRAILING_VERSION_CODE);
+
+        let sep = if push_server.contains('?') { '&' } else { '?' };
+        format!("{push_server}{sep}{}", q.encode())
+    }
+}
+
+/// Who the client claims to be in the room.
+///
+/// An enum rather than a string because the two values are not interchangeable and a typo in one is
+/// a request the server answers differently, with nothing in the response to say why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Identity {
+    /// A viewer. Everything this project does.
+    #[default]
+    Audience,
+    /// The broadcaster's own client.
+    Anchor,
+}
+
+impl Identity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Identity::Audience => "audience",
+            Identity::Anchor => "anchor",
+        }
+    }
+}
+
+/// Frame compression the socket negotiates in its query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Compression {
+    /// What the player asks for, and what the server then applies to `msg` payloads.
+    #[default]
+    Gzip,
+    /// No compression. Sent as an absent parameter, not an empty one.
+    None,
+}
+
+impl Compression {
+    /// The query value, or `None` when the parameter should be omitted entirely — the player's
+    /// serializer deletes empty values rather than sending `compress=`.
+    pub fn as_query_value(self) -> Option<&'static str> {
+        match self {
+            Compression::Gzip => Some("gzip"),
+            Compression::None => None,
+        }
+    }
+
+    /// Parse what a frame or a handshake reports back.
+    pub fn from_frame_value(value: &str) -> Self {
+        match value {
+            "gzip" => Compression::Gzip,
+            _ => Compression::None,
+        }
+    }
+}
+
+/// The socket hosts the player picks between, by cluster region.
+///
+/// The player branches on its `clusterRegion`; these are the only three hosts it can produce, so
+/// they are an enum rather than a string a caller could get subtly wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SocketCluster {
+    /// Everywhere the US and EU clusters do not claim.
+    #[default]
+    Global,
+    Us,
+    Eu,
+}
+
+impl SocketCluster {
+    pub const fn host(self) -> &'static str {
+        match self {
+            SocketCluster::Global => "wss://webcast-ws.tiktok.com",
+            SocketCluster::Us => "wss://webcast-ws.us.tiktok.com",
+            SocketCluster::Eu => "wss://webcast-ws.eu.tiktok.com",
+        }
+    }
+}
+
+/// Query for the socket the current web player opens directly, with no `im/fetch` in front of it.
+///
+/// The live room page configures its IM SDK with `wsDirect: "1"` and a `socketHost`, and the SDK
+/// then builds the socket URL itself instead of waiting for a `push_server`:
+///
+/// ```text
+/// wss://webcast-ws.tiktok.com/webcast/im/ws_proxy/ws_reuse_supplement/?<query>&X-Gnarly=<sig>
+/// ```
+///
+/// The query below reproduces the SDK's serializer parameter for parameter, in its order, because
+/// `registerWsSigner` signs the query string verbatim. Two properties of it look like mistakes and
+/// are not:
+///
+/// - **Nothing is percent-encoded.** `browser_version` carries raw spaces and parentheses, and
+///   `tz_name` a raw slash. [`Query::encode_raw`] preserves them; the URI is repaired for
+///   `http::Uri` afterwards by `sanitize_uri`, which does not disturb the signed bytes.
+/// - **`version_code` appears twice**, `180800` then `270000`. The SDK's browser block supplies the
+///   first under a snake_case key and the page config the second under a camelCase one, so its
+///   serializer emits both.
+///
+/// Read out of `static/js/async/9894.*.js` on 2026-08-18, and verified against a live room:
+/// the socket opens and pushes frames.
+#[derive(Debug, Clone)]
+pub struct DirectSocketParams {
+    pub room_id: String,
+    pub device_id: String,
+    pub compress: Compression,
+    pub identity: Identity,
+    /// Which cluster's socket host to open.
+    pub cluster: SocketCluster,
+    /// Milliseconds between application heartbeats; echoed to the server in the query.
+    pub heartbeat_duration: String,
+}
+
+impl DirectSocketParams {
+    pub fn new(room_id: impl Into<String>) -> Self {
+        Self {
+            room_id: room_id.into(),
+            device_id: random_device_id(),
+            compress: Compression::default(),
+            identity: Identity::default(),
+            cluster: SocketCluster::default(),
+            heartbeat_duration: HEARTBEAT_DURATION_MS.into(),
+        }
+    }
+
+    /// The query, in the SDK's order. Serialize it with [`Query::encode_raw`].
+    pub fn build(&self, preset: &Preset) -> Query {
+        let d = &preset.device;
+        let l = &preset.location;
+        let s = &preset.screen;
+
+        let mut q = Query::new();
+        // The SDK's browser block comes first, carrying its own `version_code`.
+        q.push_raw("version_code", WS_VERSION_CODE);
+        q.push_raw("device_platform", DEVICE_PLATFORM_WEB);
+        q.push_raw("cookie_enabled", YES);
+        q.push_raw("screen_width", s.width.to_string());
+        q.push_raw("screen_height", s.height.to_string());
+        q.push_raw("browser_language", &l.browser_language);
+        q.push_raw("browser_platform", &d.browser_platform);
+        q.push_raw("browser_name", &d.browser_name);
+        q.push_raw("browser_version", &d.browser_version);
+        q.push_raw("browser_online", YES);
+        q.push_raw("tz_name", &l.tz_name);
+        // Then the SDK's own fixed fields, then the page's config.
+        q.push_raw("app_name", "tiktok_web");
+        q.push_raw("sup_ws_ds_opt", ENABLED);
+        q.push_raw("update_version_code", UPDATE_VERSION_CODE);
+        if let Some(compress) = self.compress.as_query_value() {
+            q.push_raw("compress", compress);
+        }
+        q.push_raw("webcast_language", &l.language);
+        q.push_raw("aid", APP_ID);
+        q.push_raw("live_id", LIVE_ID);
+        q.push_raw("version_code", TRAILING_VERSION_CODE);
+        q.push_raw("app_language", &l.language);
+        q.push_raw("ws_direct", ENABLED);
+        q.push_raw("client_enter", ENABLED);
+        q.push_raw("room_id", &self.room_id);
+        q.push_raw("identity", self.identity.as_str());
+        // No round trip has been measured yet; the SDK sends the same on a cold start.
+        q.push_raw("last_rtt", LAST_RTT_UNMEASURED);
+        q.push_raw("heartbeat_duration", &self.heartbeat_duration);
+        // The tail the SDK appends after the config, in this order.
+        q.push_raw("resp_content_type", RESPONSE_PROTOBUF);
+        q.push_raw(
+            "did_rule",
+            if self.device_id.is_empty() {
+                DID_RULE_WITHOUT_DEVICE_ID
+            } else {
+                DID_RULE_WITH_DEVICE_ID
+            },
+        );
+        q.push_raw("device_id", &self.device_id);
+        q
+    }
+
+    /// The unsigned socket URL. Append the signature as `&X-Gnarly=<percent-encoded>`.
+    pub fn url(&self, preset: &Preset) -> String {
+        format!(
+            "{}{WS_REUSE_PATH}?{}",
+            self.cluster.host(),
+            self.build(preset).encode_raw()
+        )
+    }
+}
+
+/// Default socket host, kept as a constant for callers that only need the one.
+pub const DIRECT_SOCKET_HOST: &str = SocketCluster::Global.host();
+/// The path the SDK opens when `wsDirect` is on.
+pub const WS_REUSE_PATH: &str = "/webcast/im/ws_proxy/ws_reuse_supplement/";
+

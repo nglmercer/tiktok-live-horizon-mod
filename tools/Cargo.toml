@@ -1,0 +1,10 @@
+[package]
+name = "tools"
+version = "0.1.0"
+edition = "2021"
+description = "Development tools for the TikTok LIVE Horizon mod (run with `cargo xtask <command>`)"
+license = "MIT"
+publish = false
+
+[dependencies]
+toml = "0.8"
