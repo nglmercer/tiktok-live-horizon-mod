@@ -56,6 +56,11 @@ currently producing those artifacts for upstream commits.
 | [horizon-rust/horizon#17145](https://github.com/horizon-rust/horizon/pull/17145) | closed | Follow-up: "The mod API: #16941 merged with main". |
 | [horizon-rust/horizon#17401](https://github.com/horizon-rust/horizon/pull/17401) | **open**, CI mostly green | "Ship the exact-build SDK with signed Nightly metadata and shared wasm runtime" — restores `sdk-publish.yml` and the exact-build SDK producers (head `7156948`, fixes #17391). |
 
+On 2026-11-17 we posted a [downstream-use-case comment](https://github.com/horizon-rust/horizon/pull/17401#issuecomment-6955218499)
+on #17401: asked which commit SHA will get the first published SDK, whether SDK publication can
+precede the held catalogue cutover, and offered this mod as a published clean-install canary.
+No bypass or timing pressure was requested — the remaining gates are legitimate.
+
 So the code needed for a full migration **exists upstream in an open PR**; what is missing today
 is that it has not merged/published yet. Migration stays gated until that PR lands and an
 `sdk-<commit>` release exists for an upstream commit. When it does,
