@@ -61,6 +61,17 @@ is that it has not merged/published yet. Migration stays gated until that PR lan
 `sdk-<commit>` release exists for an upstream commit. When it does,
 `cargo xtask upstream-check <commit>` will report `READY`.
 
+### Can we generate the SDK ourselves? No.
+
+The SDK release docs from #17401 (`docs/modding/src/reference/sdk/01-release.md`) are explicit:
+*"A build without its signed, complete `sdk-<build id>` release is unavailable for native builds;
+the launcher does not rebuild the game to fill the gap."* Verification requires Horizon's
+signature for the tag `sdk-<build id>` plus per-file sizes and hashes from `sdk.json`; an unsigned
+local SDK is refused. The only supported no-publication route is a maintainer dry run
+(`gh workflow run prebuilt-game.yml --ref main`), which needs upstream repo write access and the
+protected release key. We have neither, so there is no local shortcut — this is why the migration
+is gated rather than just delayed.
+
 ## TODO — migrate when an upstream SDK exists
 
 Do these in order. Each step has a command so this is mechanical, not guesswork.
