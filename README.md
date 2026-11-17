@@ -27,6 +27,7 @@ Status: the plugin's features are fully migrated, plus a command-line administra
 | [PRESET](docs/PRESET.md) | The interaction preset |
 | [SECURITY](docs/SECURITY.md) | Security model and limits |
 | [MIGRATION-from-paper](docs/MIGRATION-from-paper.md) | What changes with respect to the Paper plugin |
+| [UPSTREAM-MIGRATION](docs/UPSTREAM-MIGRATION.md) | Why the pinned fork is still needed, the TODO to move to upstream, and the verification runbook |
 
 The rules, functions, DSL, preset and security documents are inherited from the Paper plugin; where behavior differs, `MIGRATION-from-paper.md` wins.
 
@@ -56,7 +57,7 @@ CI is in `.github/workflows/ci.yml`: it builds the package and runs the tests wi
 
 ## Requirements and limitations
 
-* It builds against the [`arismoko/horizon`](https://github.com/arismoko/horizon) fork's mod API at the pinned commit; it is not expected to build against other Horizon versions without a rebuild of the SDK.
+* It builds against the [`arismoko/horizon`](https://github.com/arismoko/horizon) fork's mod API at the pinned commit; it is not expected to build against other Horizon versions without a rebuild of the SDK. **The native-mod API itself is already merged upstream**, but upstream publishes no `sdk-<commit>` releases, so the SDK cannot be fetched for official releases yet. [`docs/UPSTREAM-MIGRATION.md`](docs/UPSTREAM-MIGRATION.md) tracks the exact blocker, the migration TODO, and the client/server verification runbook — read it before trying a newer version.
 * TikTok has no official LIVE API. The connection uses the same web protocol and signing bundle as the website, so a change on TikTok's side can break it until the pinned bundle hash (`signing.bundle-sha256`) is updated.
 * Clients that join a server running native mods need the same native build, and the Horizon client in the pinned snapshot can panic at startup in a race fixed by [arismoko/horizon#4815](https://github.com/arismoko/horizon/pull/4815) (a patch is in `tools/patches/`).
 * The default creator in `config.yml` is the one the original plugin shipped with; change it with `/tiktok creator <name>`.

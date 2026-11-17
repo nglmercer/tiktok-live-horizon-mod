@@ -11,6 +11,10 @@ api = "0.2"
 side = "both"
 capabilities = ["registries"]
 
+# TODO(upstream): the native-mod API is already in horizon-rust/horizon, but upstream
+# publishes no `sdk-<commit>` release, so this build is pinned to the fork that does.
+# Migration gate: `cargo xtask upstream-check <commit>` (exit 0 = SDK available).
+# Full checklist and verification runbook: docs/UPSTREAM-MIGRATION.md.
 [native]
 game = "26.3"
 horizon = "db7638b30c531c7f8004fdc5b6946de468db7aac"
