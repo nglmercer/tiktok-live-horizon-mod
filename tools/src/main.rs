@@ -11,12 +11,14 @@
 //! | `lockdiff <engine-lock> <mod-lock> [--all]` | Lists the packages whose dependency graph conflicts with the game's |
 //! | `vendor-signer <signer-checkout> <proto-out-dir>` | Vendors the TikTok signer crates into `mod/src/vendor/` |
 //! | `embed-assets` | Regenerates `mod/src/defaults.rs` from `tools/defaults/` |
+//! | `upstream-check [commit]` | Is an upstream SDK published for this build? (migration gate) |
 
 mod cmd;
 mod deploy;
 mod embed;
 mod lock;
 mod testrun;
+mod upstream;
 mod util;
 mod vendor;
 
@@ -31,7 +33,8 @@ Commands:
   lock [engine-lock]                              regenerate mod/Cargo.lock on top of the game's lock
   lockdiff <engine-lock> <mod-lock> [--all]       list dependency-graph conflicts with the game's lock
   vendor-signer <signer-checkout> <proto-out-dir> vendor the TikTok signer crates into mod/src/vendor
-  embed-assets                                    regenerate mod/src/defaults.rs from tools/defaults";
+  embed-assets                                    regenerate mod/src/defaults.rs from tools/defaults
+  upstream-check [commit]                         is an upstream SDK published for this build? (migration gate)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -47,6 +50,7 @@ fn main() -> ExitCode {
         "lockdiff" => lock::run_diff(rest),
         "vendor-signer" => vendor::run(rest),
         "embed-assets" => embed::run(),
+        "upstream-check" => upstream::run(rest),
         "help" | "--help" | "-h" => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;

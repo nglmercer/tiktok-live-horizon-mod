@@ -4,7 +4,7 @@
 
 | Item | Requirement |
 |---|---|
-| Game | Horizon fork `arismoko/horizon`, SDK commit `db7638b3` (game 26.3) |
+| Game | Horizon `horizon-rust/horizon`, SDK commit `0b14f8a` (game 26.3) |
 | Network | Outbound HTTPS/WSS to TikTok. The mod opens no listening port. |
 | Players | Clients that join need the same mod build (`side = "both"`); see below. |
 
@@ -26,7 +26,7 @@ The mod downloads the TikTok signing bundle on the first connection, verifies it
 
 ## Clients
 
-The manifest declares `side = "both"` because the fork rejects `side = "server"`. The server hooks do nothing on a client, but a client joining a native-code server must run the same native build (`native-db7638b-…`) with the mod, and a Microsoft session if `online_mode` is on.
+The manifest declares `side = "both"` because the mod registers content every client needs. The server hooks do nothing on a client, but a client joining a native-code server must run the same native build (`native-0b14f8a-…`, same mod hash) with the mod, and a Microsoft session if `online_mode` is on.
 
 ## Safe defaults
 
@@ -52,4 +52,5 @@ Stop the server, remove the mod from the build, and delete `config/tiktok_live/`
 | `signing bundle` errors | The server cannot reach TikTok's CDN, or the bundle hash changed (see `signing.bundle-sha256`). |
 | Rules do not fire | `security.execute-live-actions` is `false`, or `/tiktok debug on` shows why a rule was skipped. |
 | Hot reload ignored | `/tiktok status` shows the last reload error; the previous rules stay active. |
-| Client panics at start with `world resources joined before entry` | Race in the fork's client (not in this mod): the renderers resolve before the background world-resource loader finishes. Launch again; if it repeats, start the client first and the server after. Fix for the fork: `tools/patches/fork-client-wait-for-world-rest.patch` (compiles on `db7638b`; needs a game build from a patched checkout to take effect). |
+| Client panics at start with `world resources joined before entry` | Race in older clients (not in this mod): the renderers resolve before the background world-resource loader finishes. Fixed upstream by [horizon-rust/horizon#17318](https://github.com/horizon-rust/horizon/pull/17318), included in the pinned SDK. On older snapshots, launch again or start the client before the server. |
+| `fluid_state_definitions Missing: re-run horizon-prepare` | Resources from an older game build. Launcher 0.2.72+ refreshes them automatically; otherwise run `horizon-launcher prepare --version <version>`. |

@@ -1,7 +1,7 @@
 //! `cargo xtask deploy [server-dir]`: builds the mod into a dedicated server, points the server
 //! at the new engine and restarts it.
 //!
-//! Environment: `LAUNCHER` (the fork's launcher, default `~/.local/horizon-tools/bin/horizon-launcher`),
+//! Environment: `LAUNCHER` (the launcher, default `~/.local/horizon-tools/bin/horizon-launcher`),
 //! `VERSION` (the game version with a published SDK), `EXPORTS` (where exports live) and
 //! `KEEP` (how many old exports to keep, default 2).
 use std::path::PathBuf;
