@@ -44,7 +44,7 @@ pub fn run(args: &[String]) -> Result<ExitCode> {
 
 /// The lock of the game's prebuilt server engine, wherever the launcher unpacked it.
 fn game_lock() -> Result<std::path::PathBuf> {
-    let prebuilt = home()?.join(".local/share/horizon-fork-arismoko/launcher/native/prebuilt");
+    let prebuilt = home()?.join(".local/share/horizon-launcher/native/prebuilt");
     let mut candidates: Vec<_> = std::fs::read_dir(&prebuilt)
         .map_err(|e| format!("cannot read {}: {e}", prebuilt.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))

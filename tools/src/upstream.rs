@@ -1,15 +1,13 @@
 //! `cargo xtask upstream-check [commit]`: is an SDK published for this Horizon build?
 //!
-//! The mod is pinned to a fork commit because the fork publishes `sdk-<commit>` releases with
-//! signed SDKs. The native-mod API is already upstream; the missing piece is that artifact.
-//! This command checks GitHub for it, so migration is a yes/no question instead of a guessing
-//! game. See docs/UPSTREAM-MIGRATION.md for the full procedure.
+//! Native mods compile against the SDK published for an exact Horizon commit. This command asks
+//! GitHub whether `sdk-<commit>` exists, so an SDK bump is a yes/no question instead of guesswork.
+//! See docs/UPSTREAM-MIGRATION.md for the full procedure.
 use std::process::Command;
 
 use crate::util::{read, root, Result};
 
-const UPSTREAM: &str = "horizon-rust/horizon";
-const FORK: &str = "arismoko/horizon";
+const REPO: &str = "horizon-rust/horizon";
 
 pub fn run(args: &[String]) -> Result<std::process::ExitCode> {
     let commit = match args.first() {
@@ -19,21 +17,16 @@ pub fn run(args: &[String]) -> Result<std::process::ExitCode> {
     println!("Target commit: {commit}");
     println!("Local SDK:     {}", local_sdk_commit().unwrap_or_else(|| "(none)".to_owned()));
     println!();
-
-    let upstream = sdk_status(UPSTREAM, &commit);
-    let fork = sdk_status(FORK, &commit);
-    println!("  {UPSTREAM}: {upstream}");
-    println!("  {FORK}: {fork}");
+    let status = sdk_status(&commit);
+    println!("  {REPO}: {status}");
     println!();
-
-    if upstream == "available" {
-        println!("READY: an upstream SDK exists for this commit.");
-        println!("Next: docs/UPSTREAM-MIGRATION.md, steps 2 to 8.");
+    if status == "available" {
+        println!("READY: an SDK exists for this commit.");
+        println!("Next: docs/UPSTREAM-MIGRATION.md (pins, SDK, lock, both-side build, runbook).");
         Ok(std::process::ExitCode::SUCCESS)
     } else {
-        println!("BLOCKED: upstream publishes no sdk-<commit> release for {commit}.");
-        println!("Keep building against the pinned fork. The API is upstream; the SDK release is not.");
-        println!("Re-run this command when upstream starts publishing SDKs.");
+        println!("BLOCKED: no sdk-<commit> release for {commit}.");
+        println!("Keep the current pin; re-run this command when upstream publishes one.");
         Ok(std::process::ExitCode::from(1))
     }
 }
@@ -55,8 +48,8 @@ fn local_sdk_commit() -> Option<String> {
     rest.split('"').next().map(str::to_owned)
 }
 
-fn sdk_status(repo: &str, commit: &str) -> String {
-    let url = format!("https://api.github.com/repos/{repo}/releases/tags/sdk-{commit}");
+fn sdk_status(commit: &str) -> String {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/tags/sdk-{commit}");
     let output = Command::new("curl")
         .args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "15", &url])
         .output();

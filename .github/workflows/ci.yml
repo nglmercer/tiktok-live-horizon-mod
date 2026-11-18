@@ -17,7 +17,7 @@ jobs:
       - name: Rust
         run: rustup toolchain install stable --profile minimal && rustup default stable
 
-      - name: cargo-horizon-mod (built from the fork at the pinned commit)
+      - name: cargo-horizon-mod (built from upstream at the pinned commit)
         run: cargo install --locked --git https://github.com/horizon-rust/horizon --rev "$HORIZON_REV" cargo-horizon-mod
 
       - name: Package (generates mod/.horizon/sdk and tiktok_live.hmod)
