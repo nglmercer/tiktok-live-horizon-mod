@@ -6,16 +6,14 @@ authors = ["nglmercer"]
 license = "MIT"
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins.
 api = "0.2"
-# The fork rejects side = "server" (manifest.rs:415); only "both" or "client". The mod's hooks are
-# server-side; on a client they do nothing.
+# The mod registers content that every client needs, so it declares "both". Its server hooks
+# do nothing on a client. Clients and server must be built from the same source (same mod hash).
 side = "both"
 capabilities = ["registries"]
 
-# TODO(upstream): the native-mod API is already in horizon-rust/horizon, but upstream
-# publishes no `sdk-<commit>` release, so this build is pinned to the fork that does.
-# Migration gate: `cargo xtask upstream-check <commit>` (exit 0 = SDK available).
-# Full checklist and verification runbook: docs/UPSTREAM-MIGRATION.md.
+# Pinned to upstream horizon-rust/horizon's published SDK (see .github/workflows/ci.yml).
+# Migration history and the verification runbook: docs/UPSTREAM-MIGRATION.md.
 [native]
 game = "26.3"
-horizon = "db7638b30c531c7f8004fdc5b6946de468db7aac"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

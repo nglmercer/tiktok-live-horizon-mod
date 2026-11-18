@@ -1,176 +1,89 @@
-# Migrating off the pinned fork to upstream Horizon
+# Migration to upstream Horizon — completed 2026-11-18
 
-Status (2026-11-17): **blocked on upstream tooling, not on the mod**. The mod is finished and
-works; what keeps it on `arismoko/horizon` is the SDK release pipeline, not the API.
+The mod no longer depends on the `arismoko/horizon` fork. It builds against the published
+upstream SDK at commit `0b14f8acfd97fa2c750e42795249dcc981178ca4` (Nightly 2026-11-18, game 26.3).
 
-This document is the single place to answer three questions that kept coming up:
+## What happened
 
-1. Is the native-mod API in the official repo? **Yes.**
-2. Can we build the mod against an official release today? **No** (see *The blocker*).
-3. What exactly has to change when that becomes possible? *The TODO* below.
+| Date | Event |
+|---|---|
+| 2026-11-16 | [`horizon-rust/horizon#16941`](https://github.com/horizon-rust/horizon/pull/16941) merged the fork's mod API upstream. |
+| 2026-11-17 | [`#17318`](https://github.com/horizon-rust/horizon/pull/17318) merged the fix for the client startup race (`world resources joined before entry`). |
+| 2026-11-18 | Upstream published `sdk-0b14f8ac…` and Nightly `0b14f8a`; SDK publication is now available. |
 
-## What is already upstream
+Before publication the mod could only be built locally through a developer install with a locally
+generated SDK. Once the SDK was published, the migration was mechanical: no source code of the mod
+changed, only the pins and the generated files.
 
-The fork's native-mod changes were merged into `horizon-rust/horizon`. Verified against the
-nightly source tarball `horizon-source.tar.gz` (commit `9f42064c11efe7ef3e5ed2baad7ddc2a3b36eea0`):
+## What changed in this repo
 
-| Piece | Present upstream? | Where |
-|---|---|---|
-| Native mod API generator | yes | `crates/horizon-mod-api-gen/` |
-| Native hooks | yes | `native-hooks.json`, `crates/horizon-client/src/game/native_hooks.rs` |
-| SDK-aware build tool | yes | `crates/cargo-horizon-mod/` |
-| Launcher support | yes | `native-build`, `native-lock`, Mods page in launcher 0.2.70 |
-| `sdk-<commit>` releases with signed SDKs | **no** | only `arismoko/horizon` publishes these |
+1. `mod/horizon-mod.toml`: `horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"`. The mixins
+   revision is unchanged (`e59da909…`, still the one in `sdk.json`).
+2. `.github/workflows/ci.yml`: `HORIZON_REV` points at the same commit and installs
+   `cargo-horizon-mod` from `horizon-rust/horizon` instead of the fork.
+3. `mod/.horizon/sdk/`: regenerated with `cargo horizon-mod build` using the published SDK; not
+   committed (CI regenerates it).
+4. `mod/Cargo.lock`: regenerated from the SDK's engine lock; `cargo xtask lockdiff` reports 0 conflicts.
+5. `README.md`, `docs/INSTALLATION.md`: upstream requirements; the startup-race entry now points at
+   upstream #17318.
 
-So "delete the fork" is a tooling problem, not a code problem.
+No `.rs` file needed a change: `cargo check` against upstream's API and `cargo xtask test` (69 passed)
+were green before any edit.
 
-## The blocker
+## Verification runbook — run this before declaring a future version usable
 
-Compiling a native mod needs the SDK for the **exact** Horizon commit it targets. There are two
-ways to get one, and both fail for upstream releases today:
+This is the exact procedure used for the migration; keep it for the next SDK bump.
 
-1. **Download a signed SDK release.** `cargo horizon-mod update --horizon <commit>` looks for
-   `sdk-<commit>` in the tool's own repo. Upstream has **no** `sdk-*` releases/tags at all
-   (checked via the GitHub API: 0 of the last 100 releases, 0 matching tags). The fork publishes
-   `sdk-db7638b30c…`, `sdk-bade262…`, etc. — that is the only reason this mod builds today.
-
-   ```
-   error: game build <upstream-commit> has no signed SDK (release sdk-<upstream-commit>): ... 404
-   ```
-
-2. **Ask the launcher to build it.** `native-build --version <nightly>` refuses for the same
-   reason:
-
-   ```
-   error: The mod tools for nightly-2026-11-13-9f42064 aren't ready yet. Pick another version.
-   ```
-
-The upstream tree on `main` has no `sdk-publish.yml` workflow either (the fork does), so nobody is
-currently producing those artifacts for upstream commits.
-
-### Upstream work that unblocks this (checked 2026-11-17)
-
-| PR | State | What it does |
-|---|---|---|
-| [horizon-rust/horizon#16941](https://github.com/horizon-rust/horizon/pull/16941) | **merged 2026-11-16** | "The mod API" — brought `arismoko/horizon`'s mod API upstream. This is why the API is no longer fork-only. |
-| [horizon-rust/horizon#17145](https://github.com/horizon-rust/horizon/pull/17145) | closed | Follow-up: "The mod API: #16941 merged with main". |
-| [horizon-rust/horizon#17401](https://github.com/horizon-rust/horizon/pull/17401) | **open**, CI mostly green | "Ship the exact-build SDK with signed Nightly metadata and shared wasm runtime" — restores `sdk-publish.yml` and the exact-build SDK producers (head `7156948`, fixes #17391). |
-
-On 2026-11-17 we posted a [downstream-use-case comment](https://github.com/horizon-rust/horizon/pull/17401#issuecomment-6955218499)
-on #17401: asked which commit SHA will get the first published SDK, whether SDK publication can
-precede the held catalogue cutover, and offered this mod as a published clean-install canary.
-No bypass or timing pressure was requested — the remaining gates are legitimate.
-
-So the code needed for a full migration **exists upstream in an open PR**; what is missing today
-is that it has not merged/published yet. Migration stays gated until that PR lands and an
-`sdk-<commit>` release exists for an upstream commit. When it does,
-`cargo xtask upstream-check <commit>` will report `READY`.
-
-### Can we generate the SDK ourselves? No.
-
-The SDK release docs from #17401 (`docs/modding/src/reference/sdk/01-release.md`) are explicit:
-*"A build without its signed, complete `sdk-<build id>` release is unavailable for native builds;
-the launcher does not rebuild the game to fill the gap."* Verification requires Horizon's
-signature for the tag `sdk-<build id>` plus per-file sizes and hashes from `sdk.json`; an unsigned
-local SDK is refused. The only supported no-publication route is a maintainer dry run
-(`gh workflow run prebuilt-game.yml --ref main`), which needs upstream repo write access and the
-protected release key. We have neither, so there is no local shortcut — this is why the migration
-is gated rather than just delayed.
-
-## TODO — migrate when an upstream SDK exists
-
-Do these in order. Each step has a command so this is mechanical, not guesswork.
-
-- [ ] **1. Pick the target.** Record its release tag, commit and mixins commit. Check availability
-      first: `cargo xtask upstream-check <commit>` (exit 0 = SDK published, exit 1 = still blocked).
-- [ ] **2. Repoint the pins.** Set `horizon`/`mixins` in `mod/horizon-mod.toml` and `HORIZON_REV`
-      in `.github/workflows/ci.yml` to that commit. `game = "26.3"` only changes with Minecraft.
-- [ ] **3. Regenerate the SDK.** `cd mod && cargo horizon-mod update --horizon <commit>`
-      (use a `cargo-horizon-mod` built from the same repo/commit). This rewrites
-      `mod/.horizon/sdk/`; commit the result.
-- [ ] **4. Fix API drift.** Run `cargo xtask test`. Any compile error is a real API difference
-      between `db7638b` and the new commit; fix it in the mod, not by weakening the SDK.
-- [ ] **5. Check the lock.** `cargo xtask lock` then `cargo xtask lockdiff <engine.lock> mod/Cargo.lock`
-      (0 conflicts required).
-- [ ] **6. Build both sides from the same source** (see the runbook). Client and server must have
-      the identical mod hash or they will not negotiate payloads.
-- [ ] **7. Deploy and verify** with the runbook. Only then update `README.md` and
-      `docs/INSTALLATION.md` to drop the fork requirement.
-- [ ] **8. Remove the fork** from CI, docs, and any local tooling once a release has been verified.
-
-Until step 1 is possible, keep building against `db7638b`. Do **not** "just try the newest nightly":
-it cannot load the mod and the failure looks like a network bug (see the runbook).
-
-## Verification runbook — run this, do not infer
-
-These are the exact checks used on 2026-11-17. Copy them; a green result here is the only proof
-that client and server match.
-
-### A. Code and package
+### 1. Gate
 
 ```sh
-cargo xtask test                 # 69 passed, 0 failed, 2 ignored (live TikTok tests)
-cd mod && cargo horizon-mod build
+cargo xtask upstream-check <commit>
 ```
 
-### B. Build client and server from the same source
+`READY` (exit 0) means an upstream `sdk-<commit>` release exists. `BLOCKED` (exit 1) means keep the
+current pin.
+
+### 2. Repoint and regenerate
 
 ```sh
-FL=~/.local/horizon-tools/bin/horizon-launcher    # or the official AppImage's native-build
-MOD=/path/to/tiktok-live-horizon-mod/mod
-
-$FL native-build "$MOD" --version <build> --trust-native-code                  # client
-$FL native-build "$MOD" --server-output /tmp/out --version <build> --trust-native-code  # server
-
-python3 -c "import json;print(json.load(open('<client>/native-mods.json'))['mods'])"
-python3 -c "import json;print(json.load(open('/tmp/out/native-mods.json'))['mods'])"
+# pins: mod/horizon-mod.toml (horizon, mixins) and .github/workflows/ci.yml (HORIZON_REV)
+cd mod && cargo horizon-mod update --horizon <commit> && cargo horizon-mod build
+cargo xtask lock <sdk>/engine/Cargo.lock
+cargo xtask lockdiff <sdk>/engine/Cargo.lock mod/Cargo.lock   # must be 0 conflicts
+cargo xtask test                                              # 69 passed, 0 failed
 ```
 
-**The two `mods` arrays must be byte-for-byte identical** (same `sha256`). On 2026-11-17 both
-were `tiktok_live 0.1.0 sha256:5de15cc99e158bec9a67a906157c382a088926789cc47cfbb6cfde7d0097ee0c`.
-
-### C. Server side
+### 3. Build both sides from the same source
 
 ```sh
-horizon-server --dir <server-dir> status
-horizon-server --dir <server-dir> cmd "tiktok status"
+L=.../horizon-launcher        # 0.2.72 or newer
+$L native-build <repo>/mod --version <version> --trust-native-code
+$L native-build <repo>/mod --server-output /tmp/out --version <version> --trust-native-code
 ```
 
-Expect: `TPS 20`, `/tiktok status` lists rules and functions, and `Live Actions` reflects config.
-The `engine.path` in `server.toml` must point at the **mod build** (`.../horizon-engine` with
-`libtiktok_live_mod.so` beside it), and `engine.resources` at a prepared `26.3` folder that
-contains `fluid_state_definitions` in `block-behaviours.json` (the upstream nightly game files
-do not; a fork-snapshot export does).
+The two `native-mods.json` must show **the same mod `sha256`** (on 2026-11-18: `c88aaa99…`).
+A mismatch means different builds and the client will fail with
+`Horizon raw protocol: missing response on horizon:payloads`.
 
-If the engine folder lives under a launcher data directory that has `run-leases`, the game exits
-78 with `cannot acquire launcher cache leases`. Keep the exported engine in a neutral folder
-(e.g. `~/Descargas/horizon-modded`) or launch it through the launcher.
+### 4. Prepare game files and deploy
 
-### D. Client side — the check that actually caught the mismatch
+Install and prepare the version (`horizon-launcher install nightly`, `prepare --version <version>`).
+Launcher 0.2.72+ refreshes resources missing `fluid_state_definitions` (#18046); on older launchers
+run `horizon-prepare` by hand. Point the server's `server.toml` at the exported `horizon-engine` and
+at that version's prepared `26.3` resources, then start it.
 
-Install the freshly built client as a version in the launcher and select it for the instance,
-then join the server. In the **client** log (`~/.local/share/horizon/logs/latest.log`) expect:
+### 5. Connect and confirm
 
-```
-Connecting to <host>, 25565
-... logged in / joined the game
-```
+- Client log: `world resources joined`, `Connecting to …`, `logged in` — no panic, no payload error.
+- Server: `list` shows the player; `tiktok status` lists rules/functions.
+- `Error al iniciar sesión: Status: 429` is a transient Microsoft auth throttle, not a mod fault.
 
-In the **server** log expect `logged in with entity id …` and `joined the game`.
+## Failure signatures (kept for the next version bump)
 
-Failure signatures and their meaning:
-
-| Message | Meaning | Fix |
-|---|---|---|
-| `Horizon raw protocol: missing response on horizon:payloads` | Client and server are **different native builds** (one lacks the mod). | Rebuild both from one source (step B); check hashes. |
-| `Horizon raw protocol version mismatch` | Different `RAW_PROTOCOL`. | Same fix; also re-prepare game files. |
-| `incompatible payload … Schema` | Same mod version, different API schema. | Regenerate the SDK for the same commit on both. |
-| `Error al iniciar sesión: Status: 429` | Microsoft auth rate limit after repeated launches. | Wait a minute, retry. Not a mod problem. |
-
-### E. Final state last verified
-
-- launcher 0.2.70, instance version `native-db7638b-tiktok`, base `snapshot-2026-11-15-db7638b`
-- server `~/.local/share/horizon-launcher/servers/server`, engine
-  `~/Descargas/horizon-modded/horizon-engine`, port 25565
-- `/tiktok status`: 39 rules, 3 functions, creator `@brushvasquez`
-- client connected as `memelser`, no payload errors
+| Message | Meaning |
+|---|---|
+| `missing response on horizon:payloads` | Client and server native builds differ (mod hash mismatch). |
+| `ProtocolVersion` / `incompatible payload … Schema` | Different game SDK or API schema. |
+| `fluid_state_definitions Missing` | Stale resources; prepares with a newer launcher/exporters. |
+| `world resources joined before entry` | Pre-#17318 client; relaunch or use the pinned SDK. |
+| `mod tools … aren't ready yet` | No published SDK for that commit; migration gate not open. |

@@ -5,8 +5,8 @@ on:
   pull_request:
 
 env:
-  # The SDK and the engine the mod builds against are pinned to this commit of the fork (see mod/horizon-mod.toml).
-  HORIZON_REV: db7638b30c531c7f8004fdc5b6946de468db7aac
+  # The SDK and the engine the mod builds against are pinned to this commit of upstream Horizon (see mod/horizon-mod.toml).
+  HORIZON_REV: 0b14f8acfd97fa2c750e42795249dcc981178ca4
 
 jobs:
   test:
@@ -18,7 +18,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal && rustup default stable
 
       - name: cargo-horizon-mod (built from the fork at the pinned commit)
-        run: cargo install --locked --git https://github.com/arismoko/horizon --rev "$HORIZON_REV" cargo-horizon-mod
+        run: cargo install --locked --git https://github.com/horizon-rust/horizon --rev "$HORIZON_REV" cargo-horizon-mod
 
       - name: Package (generates mod/.horizon/sdk and tiktok_live.hmod)
         working-directory: mod
