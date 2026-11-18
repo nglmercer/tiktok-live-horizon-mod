@@ -59,7 +59,7 @@ CI is in `.github/workflows/ci.yml`: it builds the package and runs the tests wi
 
 * It builds against the upstream [`horizon-rust/horizon`](https://github.com/horizon-rust/horizon) mod API at the pinned commit (`0b14f8a…`, game 26.3), using its published `sdk-<commit>` release; it is not expected to build against other Horizon versions without a rebuild of the SDK. [`docs/UPSTREAM-MIGRATION.md`](docs/UPSTREAM-MIGRATION.md) records the migration and the client/server verification runbook.
 * TikTok has no official LIVE API. The connection uses the same web protocol and signing bundle as the website, so a change on TikTok's side can break it until the pinned bundle hash (`signing.bundle-sha256`) is updated.
-* Clients that join a server running native mods need the same native build (same mod hash). The old client startup race (`world resources joined before entry`) is fixed upstream by [horizon-rust/horizon#17318](https://github.com/horizon-rust/horizon/pull/17318); the patch in `tools/patches/` remains for builds from older snapshots.
+* The mod is **server-side only** (`side = "server"`): ordinary stock Horizon clients can join, because only both-side mods are announced to clients. Older clients with the startup race (`world resources joined before entry`) are fixed upstream by [horizon-rust/horizon#17318](https://github.com/horizon-rust/horizon/pull/17318).
 * The default creator in `config.yml` is the one the original plugin shipped with; change it with `/tiktok creator <name>`.
 
 ## License

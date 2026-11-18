@@ -45,16 +45,18 @@ cargo xtask lockdiff <sdk>/engine/Cargo.lock mod/Cargo.lock   # 0 conflicts
 cargo xtask test                                              # all green
 ```
 
-### 3. Build both sides from one source
+### 3. Build the server
 
 ```sh
 L=.../horizon-launcher        # 0.2.72 or newer
-$L native-build <repo>/mod --version <version> --trust-native-code
 $L native-build <repo>/mod --server-output /tmp/out --version <version> --trust-native-code
 ```
 
-Both `native-mods.json` must show the **same mod `sha256`** (`c88aaa99…` on 2026-11-18). A mismatch
-means the client will fail with `Horizon raw protocol: missing response on horizon:payloads`.
+The mod is `side = "server"`: its identity is **not** announced to clients (only both-side mods
+cross `horizon:mod_list`), so an ordinary stock client can join. A client built with the mod is no
+longer required. If the manifest is ever changed back to `side = "both"`, build client and server
+from one source and check that both `native-mods.json` show the same mod `sha256` — a mismatch
+causes `Horizon raw protocol: missing response on horizon:payloads`.
 
 ### 4. Prepare and deploy
 
@@ -64,15 +66,16 @@ and that version's prepared `26.3` resources, then start it.
 
 ### 5. Confirm
 
-Client log: `world resources joined`, `Connecting to …`, no panic/payload error. Server: `list`
-shows the player and `tiktok status` lists rules/functions. `Status: 429` is a transient Microsoft
-auth throttle, not a mod fault.
+Stock client log: `world resources joined`, `Connecting to …`, no panic/payload error. Server:
+`list` shows the player and `tiktok status` lists rules/functions. Verified on 2026-11-18 with a
+stock `nightly-2026-11-18-0b14f8a` client joining a `side = "server"` mod build. `Status: 429` is a
+transient Microsoft auth throttle, not a mod fault.
 
 ## Failure signatures
 
 | Message | Meaning |
 |---|---|
-| `missing response on horizon:payloads` | Client and server builds differ (mod hash mismatch). |
+| `missing response on horizon:payloads` | Client and server builds differ, or the client has an unexpected native mod. |
 | `ProtocolVersion` / `incompatible payload … Schema` | Different SDK or API schema. |
 | `fluid_state_definitions Missing` | Stale resources; re-prepare with the launcher. |
 | `world resources joined before entry` | Pre-#17318 client; relaunch or move to the pinned version. |

@@ -6,9 +6,9 @@ authors = ["nglmercer"]
 license = "MIT"
 # A native mod: Rust in src/, compiled by the launcher against the game build [native] pins.
 api = "0.2"
-# The mod registers content that every client needs, so it declares "both". Its server hooks
-# do nothing on a client. Clients and server must be built from the same source (same mod hash).
-side = "both"
+# Server-side mod: it never declares registry content a client must have, so it stays
+# private to the server and ordinary (stock) Horizon clients can join.
+side = "server"
 capabilities = ["registries"]
 
 # Pinned to upstream horizon-rust/horizon's published SDK (see .github/workflows/ci.yml).

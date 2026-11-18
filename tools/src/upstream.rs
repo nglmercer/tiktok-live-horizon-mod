@@ -22,7 +22,7 @@ pub fn run(args: &[String]) -> Result<std::process::ExitCode> {
     println!();
     if status == "available" {
         println!("READY: an SDK exists for this commit.");
-        println!("Next: docs/UPSTREAM-MIGRATION.md (pins, SDK, lock, both-side build, runbook).");
+        println!("Next: docs/UPSTREAM-MIGRATION.md (pins, SDK, lock, server build, runbook).");
         Ok(std::process::ExitCode::SUCCESS)
     } else {
         println!("BLOCKED: no sdk-<commit> release for {commit}.");

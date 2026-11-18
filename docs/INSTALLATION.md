@@ -6,7 +6,7 @@
 |---|---|
 | Game | Horizon `horizon-rust/horizon`, SDK commit `0b14f8a` (game 26.3) |
 | Network | Outbound HTTPS/WSS to TikTok. The mod opens no listening port. |
-| Players | Clients that join need the same mod build (`side = "both"`); see below. |
+| Players | Any stock Horizon client can join: the mod is server-side only (`side = "server"`). |
 
 ## Install
 
@@ -26,7 +26,7 @@ The mod downloads the TikTok signing bundle on the first connection, verifies it
 
 ## Clients
 
-The manifest declares `side = "both"` because the mod registers content every client needs. The server hooks do nothing on a client, but a client joining a native-code server must run the same native build (`native-0b14f8a-…`, same mod hash) with the mod, and a Microsoft session if `online_mode` is on.
+The manifest declares `side = "server"`: the mod declares no registry content that clients need, so its identity stays private to the server and an ordinary (stock) Horizon client can join. A Microsoft session is still required if `online_mode` is on.
 
 ## Safe defaults
 
